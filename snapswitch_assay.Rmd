@@ -1,0 +1,514 @@
+---
+title: "SNAPSwitch assay"
+author: "Haiyin Liu"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(openxlsx)
+library(RColorBrewer)
+library(patchwork)
+library(ggrepel)
+```
+
+### Overview
+
+Analysis of SNAPSwitchflow cytometry assay performed on the Cytek Aurora, recording AF488 (LNP association), Cy5 (SNAPSwitch probe or Cy5), and mScarlet (reporter expression) in live cells (DAPI negative).
+
+### Files
+
+#### Data file
+
+`data.csv` was directly exported from Flowjo with these columns: AF488/Cy5/mScarlet gMFI, GROUPNAME (name starts with a number between 1-4, this is the `group_ID`), and TUBENAME (name starts with a `sample_ID` and replicate suffix eg. `LNP1_001`).
+
+#### Sample key files
+
+The script looks for key files in a `parameters` folder. It should contain
+
+`groups.csv` links the `group_ID` to information about cells (`WT` or `LSA`), sensor (`SNAP` or `Cy5`).
+`sample_info.csv` links `sample_ID` to the LNP name (e.g. batch, targeting) and formulation.
+`SNAP_batches.csv` links the batch of SNAP oligo used with the experimentally determined correction factor, to account for switch-on efficacy.
+
+```{r parameters, message=FALSE}
+#-------- YOUR EXPERIMENT PARAMETERS HERE --------#
+
+datafile <- "Table.csv"                   # file name of your MFI table exported from FlowJo
+exp_title <- "241024 DC1940 panel new #2"        # date and name of the experiment
+SNAP_batch <- 240527                      # ID of the SNAP-oligo batch that was used
+formulation_order <- c("DMG"
+                       )        # order in which formulations will be plotted if grouping is desired
+untreated_ID <- "cells"                   # untreated sample names for background subtraction
+#-------------------------------------------------#  
+```
+
+```{r files, echo=FALSE, message=FALSE}
+# load group and sample key files
+facs_unclean <- read_csv(datafile)
+group_info <- read_csv("parameters/groups.csv")
+sample_info <- read_csv("parameters/samples.csv")
+lipid_properties <- read_csv("parameters/lipid_properties.csv")
+
+# makes sure that the sample_names are being ordered by their sample_ID (eg "LNP1", "LNP2" etc)
+sample_order <- factor(sample_info$sample_name, levels = sample_info$sample_name[order(sample_info$sample_ID)])
+
+# fetch correction factor from the SNAP batch used
+SNAP_batches <- read_csv("parameters/SNAP_batches.csv")
+conversion_factor <- SNAP_batches$corr_factor[SNAP_batches$batch == SNAP_batch]
+```
+
+### Analysis
+
+This code performs data cleaning, subtracts the background MFIs from untreated cells and calculates the endosomal escape values. Following values will be returned:
+
+-   raw gMFIs (on LSA cells)
+    -   AF488 gMFI
+    -   SNAP gMFI
+    -   mScarlet gMFI
+    -   Cy5-LNP gMFI
+-   adjusted endosomal escape (SNAP signal normalised to AF488 on WT cells for each LNP (formulation + Ab combination) as its own formulation
+    -   absolute (WT bg subtracted)
+    -   relative (additionally divided by AF488 signal)
+    -   % escape (relative to "always on" Cy5-LNP) 
+-   mScarlet expression relative to
+    -   LNP association
+    -   absolute escape
+
+```{r cleaning, echo=FALSE}
+####--------DATA CLEANING--------####
+# trim data and rename columns
+facs <- facs_unclean[,-1] %>%
+  select(where(function(x) !all(is.na(x)))) %>%
+  filter(!grepl('mystery|Unstained|LNP17', TUBENAME)) %>% # removes "mystery" and Aurora "Unstained" tubes
+  filter(!TUBENAME == "-")                                          # removes mean and SD rows
+colnames(facs) = c("AF488_raw","Cy5_raw","mScarlet_raw","GROUPNAME","TUBENAME","viability")
+
+# generate group_ID column from the first number of GROUPNAME
+facs <- add_column(facs,"group_ID" = as.numeric(sub(" .*", "", facs$GROUPNAME)))
+
+# fetch and combine group_ID information to extract `cells`, `sensor` and `formulation` columns
+facs <- facs %>% 
+  left_join(group_info, by = "group_ID") %>%
+  mutate("sample_ID" = word(TUBENAME,1,sep = "_")) %>% # extract sample_ID information from TUBENAME
+  left_join(sample_info, by = "sample_ID") %>%
+  # set the order in which the samples appear on graphs
+  mutate(sample_name = factor(sample_name, levels = sample_order))
+```
+
+```{r analysis, echo=FALSE}
+####--------CALCULATION--------####
+# for each sample, test if values are significantly different from the unstained samples
+facs_significant <- facs %>%
+  group_by(cells, group_ID, sample_ID) %>%
+  mutate(
+    significant_AF488 = t.test(AF488_raw, facs$AF488_raw[facs$sample_ID == untreated_ID])$p.value < 0.05,
+    significant_mScarlet = t.test(mScarlet_raw, facs$mScarlet_raw[facs$sample_ID == untreated_ID])$p.value < 0.05,
+    significant_Cy5 = t.test(Cy5_raw, facs$Cy5_raw[facs$sample_ID == untreated_ID])$p.value < 0.05,
+  )
+
+# if AF488 and mScarlet values are significantly different from background, subtract background (untreated_ID) to obtain true "signal"
+# otherwise, set signal to 0 if not significantly different
+facs_raw <- facs_significant %>%
+  select(-c(GROUPNAME,TUBENAME)) %>%
+  group_by(cells) %>%     # separate calculations for WT or LSA cells
+  mutate(
+    AF488 = if_else(significant_AF488, AF488_raw - mean(AF488_raw[sample_ID == untreated_ID]), 0),
+    Cy5 = if_else(significant_Cy5, Cy5_raw - mean(Cy5_raw[sample_ID == untreated_ID]), 0),
+    mScarlet = if_else(significant_mScarlet, mScarlet_raw - mean(mScarlet_raw[sample_ID == untreated_ID]), 0)
+    ) %>%
+  ungroup() %>%
+  # remove untreated_ID samples from dataframe
+  filter(sample_ID != untreated_ID)
+
+# TODO need to check why this doesn't work
+# check if SNAP values are significantly different between LSA and WT cells
+# facs_raw <- facs_raw %>%
+#   group_by(sample_ID) %>%
+#   mutate(
+#     significant_SNAP = case_when(
+#       sensor == "SNAP" ~ t.test(Cy5[cells == "WT"], Cy5[cells == "LSA"])$p.value < 0.05,
+#       sensor == "Cy5" ~ NA
+#     )
+#   ) %>%
+#   ungroup()
+
+### code chunk to report samples where any fluorescence was found to be "not significant"
+false_results <- facs_raw %>%
+  filter(significant_AF488 == FALSE | significant_mScarlet == FALSE | significant_Cy5 == FALSE) %>%
+  select(sensor, cells, formulation, sample_name, significant_AF488, significant_mScarlet, significant_Cy5) %>%
+  rowwise() %>%  # Apply row-wise operations
+  mutate(
+    not_significant = paste(
+      c(
+        if (significant_AF488 == FALSE) "AF488" else NULL,
+        if (significant_mScarlet == FALSE) "mScarlet" else NULL,
+        if (significant_Cy5 == FALSE) "Cy5" else NULL
+      ),
+      collapse = ", "
+    )
+  ) %>%
+  ungroup() %>%
+  select(sample_name, not_significant, formulation, sensor, cells) %>%  # Reorder the columns
+  distinct() %>%  # Remove duplicate rows, if any
+  arrange(sample_name)  # Sort rows by sample_name
+
+# create output directory
+if (!dir.exists("output/")){
+  dir.create("output/")}
+
+write.csv(false_results, "output/not_significant_samples.csv", row.names = FALSE) # Export summary
+
+# final calculations to normalise Cy5 to 488 MFI for both SNAP-LNP and Cy5-LNP.
+facs_norm <- facs_raw %>%
+
+  # treat EACH formulation/sample combo as its own "formulation"
+  group_by(sensor,formulation,sample_ID) %>%   
+
+  # calculations
+  mutate(norm_factor = AF488 / mean(AF488[cells == "WT"]),
+         adj_Cy5 = Cy5 / norm_factor,
+         adj_Cy5_abs = ifelse(sensor == "SNAP", adj_Cy5 - mean(adj_Cy5[cells == "WT"]), adj_Cy5), 
+         # for SNAP samples, subtracts WT signal, don't subtract WT from Cy5)
+         adj_Cy5_rel = adj_Cy5_abs / mean(AF488[cells == "WT"]), # divide by WT AF488 signal
+         express_per_assoc = mScarlet / AF488,
+         express_per_escape = mScarlet / adj_Cy5_abs) %>% 
+  ungroup()
+
+# extract final results from the SNAP samples
+results_SNAP <- facs_norm %>%
+  # removes WT values as they have been subtracted from the respective LSA samples
+  filter(cells != "WT") %>%
+  # for each SNAP sample, calculate the % escape by dividing the relative SNAP/488 signal by the relative Cy5/488 signal  
+  group_by(formulation,sample_name) %>%
+  mutate(SNAP_perc_of_Cy5 = ifelse(sensor == "SNAP", adj_Cy5_rel[sensor == "SNAP"] * conversion_factor * 100 / mean(adj_Cy5_rel[sensor == "Cy5"]), NA)) %>%
+  # drop Cy5 samples from final table
+  filter(sensor == "SNAP") %>%
+  ungroup()
+
+# join results table with lipid properties
+results_SNAP <- results_SNAP %>%
+  left_join(lipid_properties, by = c("sample_name" = "lipid_name"))
+
+```
+
+### Output
+
+This code creates exploratory graphs from the data and exports tables into a `results.xlsx` file in a prism-friendly format (for "Grouped" graphs) to copy paste if further adjustments (eg. combining replicate experiments) are needed. 
+
+The variables to export are defined in `datarange`.
+
+```{r variables}
+####--------VARIABLES TO PLOT--------####
+# define which columns should be used to generate plots and export
+# adj_Cy5_rel is still calculated but not shown/exported as we now use SNAP_perc_of_Cy5
+datarange <- c("AF488",
+               "adj_Cy5_abs",
+               "SNAP_perc_of_Cy5",
+               "express_per_escape",
+               "mScarlet")
+
+datarange_raw <-c("AF488_raw", 
+               "Cy5_raw", 
+               "mScarlet_raw", 
+               "viability")
+```
+
+```{r plots, echo=FALSE, message=FALSE, fig.width=9, fig.height=6}
+####--------PLOTS--------####
+# define colour of the plots for each variable
+colour_range <- c("darkseagreen",
+                   "grey68",
+                  "steelblue",
+                   "mediumpurple3",
+                  "indianred")
+
+# function to generate ggplots for each variable
+bar_chart <- function(df,column,colour) {
+  df %>% 
+    select(c(formulation,sample_name,all_of(column))) %>%
+    group_by(sample_name,formulation) %>%
+    summarise(mean = mean(!!sym(column)),
+              sd = sd(!!sym(column))) %>%
+    ggplot(aes(x=reorder(sample_name, -mean), y=mean, fill = factor(formulation, formulation_order))) +
+    geom_bar(stat="identity", position = "dodge", fill = colour) +
+    geom_errorbar(aes(ymin = mean - sd, ymax = mean + sd), 
+                  position = position_dodge(0.9),
+                  width = 0.3,
+                  linewidth = 0.2,
+                  colour = "#333333") +
+    labs(x = NULL,
+         y = column,
+         fill = "formulation") +
+    theme_minimal(base_size = 10) +
+    theme(legend.key.size = unit(0.2, "cm"),
+          axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1.1)
+)
+}
+
+# generate list to populate with plots
+plot_list <- sapply(datarange,function(x) NULL)
+
+# generate plots for each variable in the datarange and match with the colour range
+for(i in 1:length(datarange)){plot_list[[i]] <- bar_chart(results_SNAP, datarange[i], colour_range[i])}
+
+# combine all plots in the list into an array (patchwork package)
+all_plots <- wrap_plots(plot_list, ncol = 2) + 
+  plot_annotation(title = exp_title, 
+                  theme = theme(plot.title = element_text(size = 10)))
+
+# save and display plots
+ggsave(paste0("output/", exp_title,".png"), plot = all_plots, width = 9, height = 6, units = "in")
+all_plots
+```
+
+
+### 2D plots
+
+```{r 2D plots, echo=FALSE, fig.height=6, fig.width=9, message=FALSE}
+colour_range_2D <- c("Greens",
+                     "Greys",
+                     "Purples",
+                     "PuRd")
+
+results_2D <- results_SNAP %>%
+  select(sample_name, pka, tails, unsat, all_of(datarange)) %>%
+  filter(!pka == 99,
+         !grepl('Mix', sample_name)) 
+
+### PKA PLOTS
+# dot plots where the values are plotted against the pKa
+plots_pka <- function(df, column, colour) {
+  df2 <- df %>% 
+    select(c(sample_name, pka, all_of(column))) %>%
+    group_by(sample_name, pka) %>%
+    summarise(mean = mean(!!sym(column))) %>%
+    ungroup()
+  
+  ggplot(df2, aes(x = pka, y = mean)) +
+  geom_point(color = colour) +
+  labs(x = "pKa",
+       y = column) +
+  geom_text_repel(
+    aes(label = sample_name),
+    size = 3,
+    box.padding = unit(0.2, "lines"),
+    point.padding = unit(0.2, "lines")
+    ) +
+  theme_minimal(base_size = 10) +
+  theme(legend.key.size = unit(0.2, "cm"),
+        panel.grid.major.y = element_blank(),  # Remove y-axis gridlines
+        panel.grid.minor.y = element_blank(),
+        axis.line = element_line(color = "black"))
+}
+  
+# generate list to populate with plots
+plot_list_pka <- sapply(datarange,function(x) NULL)
+
+# generate plots for each variable in the datarange and match with the colour range
+for(i in 1:length(datarange)){plot_list_pka[[i]] <- plots_pka(results_2D, datarange[i], colour_range[i])}
+
+# combine all plots in the list into an array (patchwork package)
+all_plots_pka <- wrap_plots(plot_list_pka, ncol = 2) + 
+  plot_annotation(title = paste0(exp_title, " - pKa plots"), 
+                  theme = theme(plot.title = element_text(size = 10)))
+
+# save and display plots
+ggsave(paste0("output/", exp_title,"_pKa.png"), plot = all_plots_pka, width = 10, height = 8, units = "in")
+all_plots_pka
+
+# these are obsolete now that we group them by family in prism
+# TODO add the lipid families as another column in the lipid parameter file and group them them inside R
+# ### 2D DOT PLOTS
+# # dot plots with pKa vs tails and the value expressed as point size/colour
+# plots_pkavtails <- function(df, column, colour) {
+#   df2 <- df %>% 
+#     select(c(sample_name, pka, tails, all_of(column))) %>%
+#     group_by(sample_name, pka, tails) %>%
+#     summarise(mean = mean(!!sym(column))) %>%
+#     ungroup()
+#   
+#   # select top 3 points to label in the graph
+#   top_points <- df2 %>% arrange(desc(mean)) %>% slice_head(n = 3)
+# 
+#   ggplot(df2, aes(y = tails, x = pka, color = mean)) +
+#   geom_jitter(aes(size = mean),width = 0.05, height = 0) +
+#   scale_color_distiller(palette = colour, trans = "reverse") +  # Reverse the color scale
+#   scale_size_continuous(range = c(0.2, 3)) +
+#   geom_text(data = top_points, aes(label = sample_name), vjust = -0.5, hjust = -0.1, size = 3) +
+#   guides(color = guide_colorbar(order = 1, reverse = TRUE),
+#          size = guide_legend(order = 2, title = NULL)) +
+#   labs(x = "pKa",
+#        y = "number of tails",
+#        color = column) +
+#   theme_minimal(base_size = 10) +
+#   scale_y_continuous(limits = c(1.5, 4.5), breaks = c(2, 3, 4)) +
+#   theme(legend.key.size = unit(0.2, "cm"),
+#         panel.grid.major.y = element_blank(),  # Remove y-axis gridlines
+#         panel.grid.minor.y = element_blank(),
+#         axis.line = element_line(color = "black"))
+# }
+# 
+# # generate list to populate with plots
+# plot_list_2D <- sapply(datarange,function(x) NULL)
+# 
+# # generate plots for each variable in the datarange and match with the colour range
+# for(i in 1:length(datarange)){plot_list_2D[[i]] <- plots_pkavtails(results_2D, datarange[i], colour_range_2D[i])}
+# 
+# # combine all plots in the list into an array (patchwork package)
+# all_plots_2D <- wrap_plots(plot_list_2D, ncol = 2) + 
+#   plot_annotation(title = exp_title, 
+#                   theme = theme(plot.title = element_text(size = 10)))
+# 
+# # save and display plots
+# ggsave(paste0("output/", exp_title,"_2D.png"), plot = all_plots_2D, width = 10, height = 8, units = "in")
+# all_plots_2D
+
+```
+
+
+
+### QC plots
+
+```{r QC plots, echo=FALSE, fig.height=6, fig.width=9, message=FALSE}
+# extract raw data for QC and split them into SNAP and Cy5 samples 
+results_raw <- facs_norm %>%
+  select(c(
+    "AF488_raw",
+    "Cy5_raw",
+    "mScarlet_raw",
+    "viability",
+    "formulation",
+    "sample_name",
+    "sample_ID",
+    "cells",
+    "sensor"
+    )
+  )
+results_raw <- split(results_raw, results_raw$sensor)
+
+# define colour of the plots for each variable
+colour_range_raw <- c("darkseagreen",
+                   "skyblue2",
+                   "indianred",
+                   "grey68")
+
+# function to generate ggplots for each QC variable using the raw data
+QC_bar_chart <- function(df,column,colour) {
+  df %>% 
+    select(c(formulation,sample_name,cells,all_of(column))) %>%
+    group_by(cells,sample_name,formulation) %>%
+    summarise(mean = mean(!!sym(column)),
+              sd = sd(!!sym(column))) %>%
+    ggplot(aes(x=sample_name, y=mean, fill = factor(formulation, formulation_order))) +
+    geom_bar(stat="identity", position = "dodge", fill = colour) +
+    geom_errorbar(aes(ymin = mean - sd, ymax = mean + sd), 
+                  position = position_dodge(0.9),
+                  width = 0.3,
+                  linewidth = 0.2,
+                  colour = "#333333") +
+    labs(x = NULL,
+         y = column,
+         fill = "formulation") +
+    theme_minimal(base_size = 10) +
+    theme(legend.key.size = unit(0.2, "cm"),
+          axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1.1)
+          ) +
+    facet_wrap(vars(cells), scales = "free")
+}
+
+# generate list to populate with plots
+SNAP_QC <- sapply(datarange_raw,function(x) NULL)
+Cy5_QC <- sapply(datarange_raw,function(x) NULL)
+
+# generate plots for each variable in the datarange and match with the colour range
+for(i in 1:length(datarange_raw)){SNAP_QC[[i]] <- QC_bar_chart(results_raw[["SNAP"]], datarange_raw[i], colour_range_raw[i])}
+for(i in 1:length(datarange_raw)){Cy5_QC[[i]] <- QC_bar_chart(results_raw[["Cy5"]], datarange_raw[i], colour_range_raw[i])}
+
+# combine all plots in the list into an array (patchwork package)
+SNAP_QC_plots <- wrap_plots(SNAP_QC[1:2], ncol = 1) + 
+  plot_annotation(title = paste0(exp_title, " QC (SNAP)"), 
+                  theme = theme(plot.title = element_text(size = 10)))
+SNAP_QC_plots2 <- wrap_plots(SNAP_QC[3:4], ncol = 1)
+
+Cy5_QC_plots <- wrap_plots(Cy5_QC[1:2], ncol = 1) + 
+  plot_annotation(title = paste0(exp_title, " QC (Cy5)"), 
+                  theme = theme(plot.title = element_text(size = 10)))
+Cy5_QC_plots2 <- wrap_plots(SNAP_QC[3:4], ncol = 1)
+
+SNAP_QC_plots
+SNAP_QC_plots2
+Cy5_QC_plots
+Cy5_QC_plots2
+
+# TODO think about how to best output the QC plots
+```
+
+```{r main tables, echo=FALSE, message=FALSE}
+####--------EXCEL EXPORT--------####
+# MAIN RESULT FILE
+# function to organise the data in a prism-friendly format
+prismformat <- function(df, column) {
+  df %>%
+  group_by(sample_name, formulation) %>%
+  mutate(formulation = paste0(formulation,'_',row_number())) %>%
+  ungroup() %>%
+  select(c(formulation,sample_name,{{column}})) %>%
+  pivot_wider(names_from = formulation, values_from = {{column}})
+} 
+
+# create empty list for main variables of interest ("datarange")
+results_list <- sapply(datarange,function(x) NULL)
+# populate list with results from the SNAP samples using the prismformat function
+for(i in 1:length(datarange)){results_list[[i]] <- prismformat(results_SNAP, !!datarange[i])}
+
+# create empty list for raw data
+raw_list <- sapply(datarange,function(x) NULL)
+
+# function to reorganise the data for copying into prism
+prismrenumber <- function(df) {
+  # assign numbers to the preferred order for the formulation
+  mapping <- setNames(seq_along(formulation_order), formulation_order)
+  for (pattern in names(mapping)) {
+    colnames(df)[grep(pattern, colnames(df), ignore.case = TRUE)] <- 
+      paste0(mapping[pattern], "_", colnames(df)[grep(pattern, colnames(df), ignore.case = TRUE)])
+  }
+
+    # reorder columns (with numbered formulation groups) and sort sample by name
+  df <- df %>%
+    select("sample_name", sort(setdiff(colnames(.), "sample_name"))) %>%
+    arrange(sample_name)
+  
+  return(df)
+}
+
+# apply function to all dataframes in the list
+results_list <- lapply(results_list, prismrenumber)
+
+# determine lipid order sorted by best mScarlet expression
+mScarlet_rank <- results_list$mScarlet %>%
+  mutate(average = rowMeans(across(2:4)),
+         rank = rank(-average, ties.method = "min")) %>%
+  select(sample_name, rank)
+
+# add rank to every dataframe in the list and save to excel
+results_list <- lapply(results_list, function(df) {
+  df %>%
+    left_join(mScarlet_rank, by = "sample_name") %>%
+    arrange(rank)  # Sort by rank in ascending order
+})
+write.xlsx(results_list, file = paste0("output/", exp_title,".xlsx"))
+
+# COMBINED ANALYSIS FILE
+# write a csv of the processed data to feed into the SNAPSwitch_combined analysis 
+write.csv(results_SNAP, file = paste0("output/", exp_title,"_SNAP.csv"))
+
+# PLOT FILES FOR PKA ETC
+# create table with pKa and other characteristics of each sample vs the means of each variable in datarange
+results_SNAP_pka <- results_SNAP %>% 
+  group_by(sample_name,pka,tails,unsat) %>% 
+  summarise(across(.cols = all_of(datarange), mean))
+write.csv(results_SNAP_pka, file = paste0("output/", exp_title,"_pKa.csv"))
+
+```
