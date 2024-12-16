@@ -57,6 +57,9 @@ sample_order <- factor(sample_info$sample_name, levels = sample_info$sample_name
 # fetch correction factor from the SNAP batch used
 SNAP_batches <- read_csv("parameters/SNAP_batches.csv")
 conversion_factor <- SNAP_batches$corr_factor[SNAP_batches$batch == SNAP_batch]
+
+# create output directory
+if (!dir.exists("output/")){dir.create("output/")}
 ```
 
 ### Analysis
@@ -76,7 +79,7 @@ This code performs data cleaning, subtracts the background MFIs from untreated c
     -   LNP association
     -   absolute escape
 
-```{r cleaning, echo=FALSE}
+```{r cleaning, echo=FALSE,message=FALSE}
 ####--------DATA CLEANING--------####
 # trim data and rename columns
 facs <- facs_unclean[,-1] %>%
@@ -97,7 +100,7 @@ facs <- facs %>%
   mutate(sample_name = factor(sample_name, levels = sample_order))
 ```
 
-```{r analysis, echo=FALSE}
+```{r analysis, echo=FALSE, message=FALSE}
 ####--------CALCULATION--------####
 # for each sample, test if values are significantly different from the unstained samples
 facs_significant <- facs %>%
@@ -122,18 +125,6 @@ facs_raw <- facs_significant %>%
   # remove untreated_ID samples from dataframe
   filter(sample_ID != untreated_ID)
 
-# TODO need to check why this doesn't work
-# check if SNAP values are significantly different between LSA and WT cells
-# facs_raw <- facs_raw %>%
-#   group_by(sample_ID) %>%
-#   mutate(
-#     significant_SNAP = case_when(
-#       sensor == "SNAP" ~ t.test(Cy5[cells == "WT"], Cy5[cells == "LSA"])$p.value < 0.05,
-#       sensor == "Cy5" ~ NA
-#     )
-#   ) %>%
-#   ungroup()
-
 ### code chunk to report samples where any fluorescence was found to be "not significant"
 false_results <- facs_raw %>%
   filter(significant_AF488 == FALSE | significant_mScarlet == FALSE | significant_Cy5 == FALSE) %>%
@@ -154,27 +145,45 @@ false_results <- facs_raw %>%
   distinct() %>%  # Remove duplicate rows, if any
   arrange(sample_name)  # Sort rows by sample_name
 
-# create output directory
-if (!dir.exists("output/")){
-  dir.create("output/")}
-
 write.csv(false_results, "output/not_significant_samples.csv", row.names = FALSE) # Export summary
 
-# final calculations to normalise Cy5 to 488 MFI for both SNAP-LNP and Cy5-LNP.
+# calculations to normalise Cy5 to 488 MFI for both SNAP-LNP and Cy5-LNP.
 facs_norm <- facs_raw %>%
-
-  # treat EACH formulation/sample combo as its own "formulation"
-  group_by(sensor,formulation,sample_ID) %>%   
-
-  # calculations
+  group_by(sensor,formulation,sample_ID) %>%   # treat EACH formulation/sample combo as its own "formulation"
   mutate(norm_factor = AF488 / mean(AF488[cells == "WT"]),
-         adj_Cy5 = Cy5 / norm_factor,
-         adj_Cy5_abs = ifelse(sensor == "SNAP", adj_Cy5 - mean(adj_Cy5[cells == "WT"]), adj_Cy5), 
-         # for SNAP samples, subtracts WT signal, don't subtract WT from Cy5)
-         adj_Cy5_rel = adj_Cy5_abs / mean(AF488[cells == "WT"]), # divide by WT AF488 signal
-         express_per_assoc = mScarlet / AF488,
-         express_per_escape = mScarlet / adj_Cy5_abs) %>% 
+         adj_Cy5 = Cy5 / norm_factor) %>% 
   ungroup()
+
+# check if SNAP signal is significantly different in WT and LSA samples
+facs_norm <- facs_norm %>%
+  group_by(sample_ID) %>%
+  mutate(
+    significant_SNAP = ifelse(
+      sensor == "SNAP",
+      t.test(adj_Cy5[cells == "WT" & sensor == "SNAP"], 
+             adj_Cy5[cells == "LSA" & sensor == "SNAP"])$p.value < 0.05,
+      NA
+    )
+  ) %>%
+  ungroup()
+
+# check if significant_SNAP is TRUE, then subtract WT from from LSA, otherwise set to 0
+# set negative escape samples to zero
+facs_norm <- facs_norm %>%
+  group_by(formulation, sensor, sample_ID) %>%
+  mutate(
+    adj_Cy5_abs = ifelse(sensor == "SNAP", 
+                         adj_Cy5 - mean(adj_Cy5[cells == "WT"]), 
+                         adj_Cy5),
+    adj_Cy5_abs = pmax(adj_Cy5_abs, 0), # Set negative values to 0
+    adj_Cy5_rel = adj_Cy5_abs / mean(AF488[cells == "WT"]), # Divide by WT AF488 signal
+    express_per_assoc = mScarlet / AF488,
+    express_per_escape = ifelse(adj_Cy5_abs == 0, NA, mScarlet / adj_Cy5_abs) # Set NA if adj_Cy5_abs is 0
+  ) %>%
+  ungroup()
+
+
+# for SNAP samples, subtracts WT signal, don't subtract WT from Cy5)
 
 # extract final results from the SNAP samples
 results_SNAP <- facs_norm %>%
