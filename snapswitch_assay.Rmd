@@ -41,6 +41,7 @@ SNAP_batch <- 240527                      # ID of the SNAP-oligo batch that was 
 formulation_order <- c("DMG"
                        )        # order in which formulations will be plotted if grouping is desired
 untreated_ID <- "cells"                   # untreated sample names for background subtraction
+lipids <- TRUE                            # are you comparing lipids?
 #-------------------------------------------------#  
 ```
 
@@ -49,7 +50,10 @@ untreated_ID <- "cells"                   # untreated sample names for backgroun
 facs_unclean <- read_csv(datafile)
 group_info <- read_csv("parameters/groups.csv")
 sample_info <- read_csv("parameters/samples.csv")
-lipid_properties <- read_csv("parameters/lipid_properties.csv")
+column_info <- read_csv("parameters/column_info.csv")
+R_colours <- read_csv("parameters/config/R_colours.csv")
+
+if (lipids == TRUE) {lipid_properties <- read_csv("parameters/config/lipid_properties.csv")}
 
 # makes sure that the sample_names are being ordered by their sample_ID (eg "LNP1", "LNP2" etc)
 sample_order <- factor(sample_info$sample_name, levels = sample_info$sample_name[order(sample_info$sample_ID)])
@@ -86,7 +90,14 @@ facs <- facs_unclean[,-1] %>%
   select(where(function(x) !all(is.na(x)))) %>%
   filter(!grepl('mystery|Unstained|LNP17', TUBENAME)) %>% # removes "mystery" and Aurora "Unstained" tubes
   filter(!TUBENAME == "-")                                          # removes mean and SD rows
-colnames(facs) = c("AF488_raw","Cy5_raw","mScarlet_raw","GROUPNAME","TUBENAME","viability")
+
+# rename columns and append "_raw" for fluorescent channels that need calculation
+# use matching vector for renaming, then assign a column_ID for matching names
+rename_vector <- setNames(column_info$column_ID, column_info$column_name)
+colnames(facs) <- colnames(facs) %>%
+  { ifelse(. %in% names(rename_vector), rename_vector[.], .) } %>%
+  # append "_raw" where if_subtract is TRUE
+  { ifelse(. %in% column_info$column_ID[column_info$if_subtract], paste0(., "_raw"), .) }
 
 # generate group_ID column from the first number of GROUPNAME
 facs <- add_column(facs,"group_ID" = as.numeric(sub(" .*", "", facs$GROUPNAME)))
@@ -198,7 +209,7 @@ results_SNAP <- facs_norm %>%
 
 # join results table with lipid properties
 results_SNAP <- results_SNAP %>%
-  left_join(lipid_properties, by = c("sample_name" = "lipid_name"))
+  {if (lipids == TRUE) left_join(., lipid_properties, by = c("sample_name" = "lipid_name")) else .}
 
 ```
 
@@ -227,11 +238,13 @@ datarange_raw <-c("AF488_raw",
 ```{r plots, echo=FALSE, message=FALSE, fig.width=9, fig.height=6}
 ####--------PLOTS--------####
 # define colour of the plots for each variable
-colour_range <- c("darkseagreen",
-                   "grey68",
-                  "steelblue",
-                   "mediumpurple3",
-                  "indianred")
+column_colour <- column_info$colour
+colourrange <- colourrange <- data.frame(colour = column_colour) %>%
+  left_join(R_colours, by = "colour") %>%
+  arrange(match(colour, column_colour)) %>%
+  # if comparing only one "formulation" group, use a plain R colour, otherwise use the Brewer pallette
+  {if (length(formulation_order) == 1) {pull(., R_colour)} else {pull(., Brewer_colour)}}
+
 
 # function to generate ggplots for each variable
 bar_chart <- function(df,column,colour) {
@@ -260,7 +273,7 @@ bar_chart <- function(df,column,colour) {
 plot_list <- sapply(datarange,function(x) NULL)
 
 # generate plots for each variable in the datarange and match with the colour range
-for(i in 1:length(datarange)){plot_list[[i]] <- bar_chart(results_SNAP, datarange[i], colour_range[i])}
+for(i in 1:length(datarange)){plot_list[[i]] <- bar_chart(results_SNAP, datarange[i], colourrange[i])}
 
 # combine all plots in the list into an array (patchwork package)
 all_plots <- wrap_plots(plot_list, ncol = 2) + 
@@ -276,7 +289,7 @@ all_plots
 ### 2D plots
 
 ```{r 2D plots, echo=FALSE, fig.height=6, fig.width=9, message=FALSE}
-colour_range_2D <- c("Greens",
+colourrange_2D <- c("Greens",
                      "Greys",
                      "Purples",
                      "PuRd")
@@ -316,7 +329,7 @@ plots_pka <- function(df, column, colour) {
 plot_list_pka <- sapply(datarange,function(x) NULL)
 
 # generate plots for each variable in the datarange and match with the colour range
-for(i in 1:length(datarange)){plot_list_pka[[i]] <- plots_pka(results_2D, datarange[i], colour_range[i])}
+for(i in 1:length(datarange)){plot_list_pka[[i]] <- plots_pka(results_2D, datarange[i], colourrange[i])}
 
 # combine all plots in the list into an array (patchwork package)
 all_plots_pka <- wrap_plots(plot_list_pka, ncol = 2) + 
@@ -363,7 +376,7 @@ all_plots_pka
 # plot_list_2D <- sapply(datarange,function(x) NULL)
 # 
 # # generate plots for each variable in the datarange and match with the colour range
-# for(i in 1:length(datarange)){plot_list_2D[[i]] <- plots_pkavtails(results_2D, datarange[i], colour_range_2D[i])}
+# for(i in 1:length(datarange)){plot_list_2D[[i]] <- plots_pkavtails(results_2D, datarange[i], colourrange_2D[i])}
 # 
 # # combine all plots in the list into an array (patchwork package)
 # all_plots_2D <- wrap_plots(plot_list_2D, ncol = 2) + 
@@ -398,7 +411,7 @@ results_raw <- facs_norm %>%
 results_raw <- split(results_raw, results_raw$sensor)
 
 # define colour of the plots for each variable
-colour_range_raw <- c("darkseagreen",
+colourrange_raw <- c("darkseagreen",
                    "skyblue2",
                    "indianred",
                    "grey68")
@@ -432,8 +445,8 @@ SNAP_QC <- sapply(datarange_raw,function(x) NULL)
 Cy5_QC <- sapply(datarange_raw,function(x) NULL)
 
 # generate plots for each variable in the datarange and match with the colour range
-for(i in 1:length(datarange_raw)){SNAP_QC[[i]] <- QC_bar_chart(results_raw[["SNAP"]], datarange_raw[i], colour_range_raw[i])}
-for(i in 1:length(datarange_raw)){Cy5_QC[[i]] <- QC_bar_chart(results_raw[["Cy5"]], datarange_raw[i], colour_range_raw[i])}
+for(i in 1:length(datarange_raw)){SNAP_QC[[i]] <- QC_bar_chart(results_raw[["SNAP"]], datarange_raw[i], colourrange_raw[i])}
+for(i in 1:length(datarange_raw)){Cy5_QC[[i]] <- QC_bar_chart(results_raw[["Cy5"]], datarange_raw[i], colourrange_raw[i])}
 
 # combine all plots in the list into an array (patchwork package)
 SNAP_QC_plots <- wrap_plots(SNAP_QC[1:2], ncol = 1) + 

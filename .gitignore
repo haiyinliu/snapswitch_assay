@@ -5,3 +5,4 @@ output/
 .RData
 .Rhistory
 /snapswitch_assay.html
+.Rproj.user
