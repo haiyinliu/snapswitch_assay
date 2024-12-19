@@ -55,7 +55,7 @@ R_colours <- read_csv("parameters/config/R_colours.csv")
 
 if (lipids == TRUE) {lipid_properties <- read_csv("parameters/config/lipid_properties.csv")}
 
-# makes sure that the sample_names are being ordered by their sample_ID (eg "LNP1", "LNP2" etc)
+# helper vector to order sample_names their sample_ID (eg "LNP1", "LNP2" etc)
 sample_order <- factor(sample_info$sample_name, levels = sample_info$sample_name[order(sample_info$sample_ID)])
 
 # fetch correction factor from the SNAP batch used
@@ -107,7 +107,7 @@ facs <- facs %>%
   left_join(group_info, by = "group_ID") %>%
   mutate("sample_ID" = word(TUBENAME,1,sep = "_")) %>% # extract sample_ID information from TUBENAME
   left_join(sample_info, by = "sample_ID") %>%
-  # set the order in which the samples appear on graphs
+  # set the order in which the samples appear on the QC graphs
   mutate(sample_name = factor(sample_name, levels = sample_order))
 ```
 
@@ -184,8 +184,10 @@ facs_norm <- facs_norm %>%
   group_by(formulation, sensor, sample_ID) %>%
   mutate(
     adj_Cy5_abs = ifelse(sensor == "SNAP", 
-                         adj_Cy5 - mean(adj_Cy5[cells == "WT"]), 
-                         adj_Cy5),
+                         ifelse(significant_SNAP, 
+                                adj_Cy5 - mean(adj_Cy5[cells == "WT"]), 
+                                0), # Set to 0 if significant_SNAP is FALSE
+                         adj_Cy5), # Keep adj_Cy5 as is if sensor is Cy5
     adj_Cy5_abs = pmax(adj_Cy5_abs, 0), # Set negative values to 0
     adj_Cy5_rel = adj_Cy5_abs / mean(AF488[cells == "WT"]), # Divide by WT AF488 signal
     express_per_assoc = mScarlet / AF488,
