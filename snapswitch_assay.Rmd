@@ -240,12 +240,19 @@ datarange_raw <-c("AF488_raw",
 ```{r plots, echo=FALSE, message=FALSE, fig.width=9, fig.height=6}
 ####--------PLOTS--------####
 # define colour of the plots for each variable
-column_colour <- column_info$colour
-colourrange <- colourrange <- data.frame(colour = column_colour) %>%
-  left_join(R_colours, by = "colour") %>%
-  arrange(match(colour, column_colour)) %>%
-  # if comparing only one "formulation" group, use a plain R colour, otherwise use the Brewer pallette
-  {if (length(formulation_order) == 1) {pull(., R_colour)} else {pull(., Brewer_colour)}}
+colourrange <- c("darkseagreen",
+                 "skyblue2",
+                 "grey68",
+                 "mediumpurple3",
+                 "indianred")
+
+# TODO fix the colour range and make it match the datarange (figure out how to match it not only for the raw data channels) 
+# column_colour <- column_info$colour
+# colourrange <- data.frame(colour = column_colour) %>%
+#  left_join(R_colours, by = "colour") %>%
+#  arrange(match(colour, column_colour)) %>%
+#  # if comparing only one "formulation" group, use a plain R colour, otherwise use the Brewer pallette
+#  {if (length(formulation_order) == 1) {pull(., R_colour)} else {pull(., Brewer_colour)}}
 
 
 # function to generate ggplots for each variable
