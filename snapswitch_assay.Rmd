@@ -35,7 +35,7 @@ The script looks for key files in a `parameters` folder. It should contain
 ```{r parameters, message=FALSE}
 #-------- YOUR EXPERIMENT PARAMETERS HERE --------#
 
-datafile <- "test.csv"                   # file name of your MFI table exported from FlowJo
+datafile <- "Table_Thuy.csv"                   # file name of your MFI table exported from FlowJo
 exp_title <- "Thuy test"        # date and name of the experiment
 SNAP_batch <- 240527                      # ID of the SNAP-oligo batch that was used
 formulation_order <- c("DMG"
@@ -142,7 +142,8 @@ facs_raw <- facs_significant %>%
   group_by(cells) %>%     # separate calculations for WT or LSA cells
   mutate(
     AF488 = if_else(significant_AF488, AF488_raw - mean(AF488_raw[sample_ID == untreated_ID]), 0),
-    Cy5 = if_else(significant_Cy5, Cy5_raw - mean(Cy5_raw[sample_ID == untreated_ID]), 0),
+    # CHANGE 251007: Cy5 is not reported as pure value and only reported as LSA - WT, therefore subtraction happens afterwards 
+    Cy5 = Cy5_raw,
     mScarlet = if_else(significant_mScarlet, mScarlet_raw - mean(mScarlet_raw[sample_ID == untreated_ID]), 0)
     ) %>%
   ungroup() %>%
