@@ -35,13 +35,13 @@ The script looks for key files in a `parameters` folder. It should contain
 ```{r parameters, message=FALSE}
 #-------- YOUR EXPERIMENT PARAMETERS HERE --------#
 
-datafile <- "Table.csv"                   # file name of your MFI table exported from FlowJo
-exp_title <- "241024 DC1940 panel new #2"        # date and name of the experiment
+datafile <- "test.csv"                   # file name of your MFI table exported from FlowJo
+exp_title <- "Thuy test"        # date and name of the experiment
 SNAP_batch <- 240527                      # ID of the SNAP-oligo batch that was used
 formulation_order <- c("DMG"
                        )        # order in which formulations will be plotted if grouping is desired
-untreated_ID <- "cells"                   # untreated sample names for background subtraction
-lipids <- TRUE                            # are you comparing lipids?
+untreated_ID <- "PBS"                   # untreated sample names for background subtraction
+lipids <- FALSE                            # are you comparing lipids?
 #-------------------------------------------------#  
 ```
 
@@ -86,7 +86,8 @@ This code performs data cleaning, subtracts the background MFIs from untreated c
 ```{r cleaning, echo=FALSE,message=FALSE}
 ####--------DATA CLEANING--------####
 # trim data and rename columns
-facs <- facs_unclean[,-1] %>%
+facs <- facs_unclean %>%
+  select(-"...1") %>%
   select(where(function(x) !all(is.na(x)))) %>%
   filter(!grepl('mystery|Unstained|LNP17', TUBENAME)) %>% # removes "mystery" and Aurora "Unstained" tubes
   filter(!TUBENAME == "-")                                          # removes mean and SD rows
@@ -113,14 +114,26 @@ facs <- facs %>%
 
 ```{r analysis, echo=FALSE, message=FALSE}
 ####--------CALCULATION--------####
-# for each sample, test if values are significantly different from the unstained samples
-facs_significant <- facs %>%
-  group_by(cells, group_ID, sample_ID) %>%
-  mutate(
-    significant_AF488 = t.test(AF488_raw, facs$AF488_raw[facs$sample_ID == untreated_ID])$p.value < 0.05,
-    significant_mScarlet = t.test(mScarlet_raw, facs$mScarlet_raw[facs$sample_ID == untreated_ID])$p.value < 0.05,
-    significant_Cy5 = t.test(Cy5_raw, facs$Cy5_raw[facs$sample_ID == untreated_ID])$p.value < 0.05,
-  )
+# get fluorescence values for untreated samples
+facs_untreated <- facs %>%
+  filter(sample_ID == untreated_ID) %>%
+  select(cells,AF488_raw,Cy5_raw,mScarlet_raw)
+
+# function that tests for each cell type, treatment group, and sample, if values are significantly different from the untreated samples that cell type
+calc_significant <- function(cell_type) {
+  facs %>%
+    filter(cells == cell_type) %>%
+    group_by(group_ID, sample_ID) %>%
+    mutate(
+      significant_AF488 = t.test(AF488_raw, facs_untreated$AF488_raw[facs_untreated$cells == cell_type])$p.value < 0.05,
+      significant_Cy5 = t.test(Cy5_raw, facs_untreated$Cy5_raw[facs_untreated$cells == cell_type])$p.value < 0.05,
+      significant_mScarlet = t.test(mScarlet_raw, facs_untreated$mScarlet_raw[facs_untreated$cells == cell_type])$p.value < 0.05
+    ) %>%
+    ungroup()
+}
+
+# combine results for WT and LSA cells
+facs_significant <- bind_rows(calc_significant("WT"), calc_significant("LSA"))
 
 # if AF488 and mScarlet values are significantly different from background, subtract background (untreated_ID) to obtain true "signal"
 # otherwise, set signal to 0 if not significantly different
@@ -137,26 +150,26 @@ facs_raw <- facs_significant %>%
   filter(sample_ID != untreated_ID)
 
 ### code chunk to report samples where any fluorescence was found to be "not significant"
-false_results <- facs_raw %>%
-  filter(significant_AF488 == FALSE | significant_mScarlet == FALSE | significant_Cy5 == FALSE) %>%
-  select(sensor, cells, formulation, sample_name, significant_AF488, significant_mScarlet, significant_Cy5) %>%
-  rowwise() %>%  # Apply row-wise operations
-  mutate(
-    not_significant = paste(
-      c(
-        if (significant_AF488 == FALSE) "AF488" else NULL,
-        if (significant_mScarlet == FALSE) "mScarlet" else NULL,
-        if (significant_Cy5 == FALSE) "Cy5" else NULL
-      ),
-      collapse = ", "
-    )
-  ) %>%
-  ungroup() %>%
-  select(sample_name, not_significant, formulation, sensor, cells) %>%  # Reorder the columns
-  distinct() %>%  # Remove duplicate rows, if any
-  arrange(sample_name)  # Sort rows by sample_name
-
-write.csv(false_results, "output/not_significant_samples.csv", row.names = FALSE) # Export summary
+# false_results <- facs_raw %>%
+#   filter(significant_AF488 == FALSE | significant_mScarlet == FALSE | significant_Cy5 == FALSE) %>%
+#   select(sensor, cells, formulation, sample_name, significant_AF488, significant_mScarlet, significant_Cy5) %>%
+#   rowwise() %>%  # Apply row-wise operations
+#   mutate(
+#     not_significant = paste(
+#       c(
+#         if (significant_AF488 == FALSE) "AF488" else NULL,
+#         if (significant_mScarlet == FALSE) "mScarlet" else NULL,
+#         if (significant_Cy5 == FALSE) "Cy5" else NULL
+#       ),
+#       collapse = ", "
+#     )
+#   ) %>%
+#   ungroup() %>%
+#   select(sample_name, not_significant, formulation, sensor, cells) %>%  # Reorder the columns
+#   distinct() %>%  # Remove duplicate rows, if any
+#   arrange(sample_name)  # Sort rows by sample_name
+# 
+# write.csv(false_results, "output/not_significant_samples.csv", row.names = FALSE) # Export summary
 
 # calculations to normalise Cy5 to 488 MFI for both SNAP-LNP and Cy5-LNP.
 facs_norm <- facs_raw %>%
@@ -254,7 +267,6 @@ colourrange <- c("darkseagreen",
 #  # if comparing only one "formulation" group, use a plain R colour, otherwise use the Brewer pallette
 #  {if (length(formulation_order) == 1) {pull(., R_colour)} else {pull(., Brewer_colour)}}
 
-
 # function to generate ggplots for each variable
 bar_chart <- function(df,column,colour) {
   df %>% 
@@ -262,7 +274,10 @@ bar_chart <- function(df,column,colour) {
     group_by(sample_name,formulation) %>%
     summarise(mean = mean(!!sym(column)),
               sd = sd(!!sym(column))) %>%
-    ggplot(aes(x=reorder(sample_name, -mean), y=mean, fill = factor(formulation, formulation_order))) +
+    ggplot(aes(
+      x=if (lipids) reorder(sample_name, -mean) else factor(sample_name, levels = sort(unique(sample_name))),
+      y=mean, 
+      fill = factor(formulation, formulation_order))) +
     geom_bar(stat="identity", position = "dodge", fill = colour) +
     geom_errorbar(aes(ymin = mean - sd, ymax = mean + sd), 
                   position = position_dodge(0.9),
@@ -298,56 +313,58 @@ all_plots
 ### 2D plots
 
 ```{r 2D plots, echo=FALSE, fig.height=6, fig.width=9, message=FALSE}
-colourrange_2D <- c("Greens",
+if (lipids == TRUE) {
+  colourrange_2D <- c("Greens",
                      "Greys",
                      "Purples",
                      "PuRd")
 
-results_2D <- results_SNAP %>%
-  select(sample_name, pka, tails, unsat, all_of(datarange)) %>%
-  filter(!pka == 99,
-         !grepl('Mix', sample_name)) 
-
-### PKA PLOTS
-# dot plots where the values are plotted against the pKa
-plots_pka <- function(df, column, colour) {
-  df2 <- df %>% 
-    select(c(sample_name, pka, all_of(column))) %>%
-    group_by(sample_name, pka) %>%
-    summarise(mean = mean(!!sym(column))) %>%
-    ungroup()
+  results_2D <- results_SNAP %>%
+    select(sample_name, pka, tails, unsat, all_of(datarange)) %>%
+    filter(!pka == 99,
+           !grepl('Mix', sample_name)) 
   
-  ggplot(df2, aes(x = pka, y = mean)) +
-  geom_point(color = colour) +
-  labs(x = "pKa",
-       y = column) +
-  geom_text_repel(
-    aes(label = sample_name),
-    size = 3,
-    box.padding = unit(0.2, "lines"),
-    point.padding = unit(0.2, "lines")
-    ) +
-  theme_minimal(base_size = 10) +
-  theme(legend.key.size = unit(0.2, "cm"),
-        panel.grid.major.y = element_blank(),  # Remove y-axis gridlines
-        panel.grid.minor.y = element_blank(),
-        axis.line = element_line(color = "black"))
+  ### PKA PLOTS
+  # dot plots where the values are plotted against the pKa
+  plots_pka <- function(df, column, colour) {
+    df2 <- df %>% 
+      select(c(sample_name, pka, all_of(column))) %>%
+      group_by(sample_name, pka) %>%
+      summarise(mean = mean(!!sym(column))) %>%
+      ungroup()
+    
+    ggplot(df2, aes(x = pka, y = mean)) +
+    geom_point(color = colour) +
+    labs(x = "pKa",
+         y = column) +
+    geom_text_repel(
+      aes(label = sample_name),
+      size = 3,
+      box.padding = unit(0.2, "lines"),
+      point.padding = unit(0.2, "lines")
+      ) +
+    theme_minimal(base_size = 10) +
+    theme(legend.key.size = unit(0.2, "cm"),
+          panel.grid.major.y = element_blank(),  # Remove y-axis gridlines
+          panel.grid.minor.y = element_blank(),
+          axis.line = element_line(color = "black"))
+  }
+    
+  # generate list to populate with plots
+  plot_list_pka <- sapply(datarange,function(x) NULL)
+  
+  # generate plots for each variable in the datarange and match with the colour range
+  for(i in 1:length(datarange)){plot_list_pka[[i]] <- plots_pka(results_2D, datarange[i], colourrange[i])}
+  
+  # combine all plots in the list into an array (patchwork package)
+  all_plots_pka <- wrap_plots(plot_list_pka, ncol = 2) + 
+    plot_annotation(title = paste0(exp_title, " - pKa plots"), 
+                    theme = theme(plot.title = element_text(size = 10)))
+  
+  # save and display plots
+  ggsave(paste0("output/", exp_title,"_pKa.png"), plot = all_plots_pka, width = 10, height = 8, units = "in")
+  all_plots_pka
 }
-  
-# generate list to populate with plots
-plot_list_pka <- sapply(datarange,function(x) NULL)
-
-# generate plots for each variable in the datarange and match with the colour range
-for(i in 1:length(datarange)){plot_list_pka[[i]] <- plots_pka(results_2D, datarange[i], colourrange[i])}
-
-# combine all plots in the list into an array (patchwork package)
-all_plots_pka <- wrap_plots(plot_list_pka, ncol = 2) + 
-  plot_annotation(title = paste0(exp_title, " - pKa plots"), 
-                  theme = theme(plot.title = element_text(size = 10)))
-
-# save and display plots
-ggsave(paste0("output/", exp_title,"_pKa.png"), plot = all_plots_pka, width = 10, height = 8, units = "in")
-all_plots_pka
 
 # these are obsolete now that we group them by family in prism
 # TODO add the lipid families as another column in the lipid parameter file and group them them inside R
@@ -537,9 +554,10 @@ write.csv(results_SNAP, file = paste0("output/", exp_title,"_SNAP.csv"))
 
 # PLOT FILES FOR PKA ETC
 # create table with pKa and other characteristics of each sample vs the means of each variable in datarange
-results_SNAP_pka <- results_SNAP %>% 
-  group_by(sample_name,pka,tails,unsat) %>% 
-  summarise(across(.cols = all_of(datarange), mean))
-write.csv(results_SNAP_pka, file = paste0("output/", exp_title,"_pKa.csv"))
-
+if (lipids == TRUE) {
+  results_SNAP_pka <- results_SNAP %>% 
+    group_by(sample_name,pka,tails,unsat) %>% 
+    summarise(across(.cols = all_of(datarange), mean))
+  write.csv(results_SNAP_pka, file = paste0("output/", exp_title,"_pKa.csv"))
+}
 ```
