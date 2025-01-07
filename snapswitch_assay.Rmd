@@ -173,6 +173,7 @@ facs_raw <- facs_significant %>%
 
 # calculations to normalise Cy5 to 488 MFI for both SNAP-LNP and Cy5-LNP.
 facs_norm <- facs_raw %>%
+  select(-c(AF488_raw,Cy5_raw,mScarlet_raw,significant_AF488,significant_Cy5,significant_mScarlet)) %>%
   group_by(sensor,formulation,sample_ID) %>%   # treat EACH formulation/sample combo as its own "formulation"
   mutate(norm_factor = AF488 / mean(AF488[cells == "WT"]),
          adj_Cy5 = Cy5 / norm_factor) %>% 
@@ -191,25 +192,29 @@ facs_norm <- facs_norm %>%
   ) %>%
   ungroup()
 
-# check if significant_SNAP is TRUE, then subtract WT from from LSA, otherwise set to 0
-# set negative escape samples to zero
+# perform SNAP fluorescence calculation
 facs_norm <- facs_norm %>%
   group_by(formulation, sensor, sample_ID) %>%
   mutate(
+
+    # for SNAP samples, subtracts WT signal, don't subtract WT from Cy5)
     adj_Cy5_abs = ifelse(sensor == "SNAP", 
+                         
+                         # check if significant_SNAP is TRUE, then subtract WT from from LSA, otherwise set to 0
                          ifelse(significant_SNAP, 
                                 adj_Cy5 - mean(adj_Cy5[cells == "WT"]), 
                                 0), # Set to 0 if significant_SNAP is FALSE
+                         
                          adj_Cy5), # Keep adj_Cy5 as is if sensor is Cy5
     adj_Cy5_abs = pmax(adj_Cy5_abs, 0), # Set negative values to 0
-    adj_Cy5_rel = adj_Cy5_abs / mean(AF488[cells == "WT"]), # Divide by WT AF488 signal
+    adj_Cy5_rel = adj_Cy5_abs / AF488, # Divide by AF488 signal of the same sample
     express_per_assoc = mScarlet / AF488,
     express_per_escape = ifelse(adj_Cy5_abs == 0, NA, mScarlet / adj_Cy5_abs) # Set NA if adj_Cy5_abs is 0
   ) %>%
   ungroup()
 
+# set negative escape samples to zero
 
-# for SNAP samples, subtracts WT signal, don't subtract WT from Cy5)
 
 # extract final results from the SNAP samples
 results_SNAP <- facs_norm %>%
@@ -421,7 +426,7 @@ if (lipids == TRUE) {
 
 ```{r QC plots, echo=FALSE, fig.height=6, fig.width=9, message=FALSE}
 # extract raw data for QC and split them into SNAP and Cy5 samples 
-results_raw <- facs_norm %>%
+results_raw <- facs_raw %>%
   select(c(
     "AF488_raw",
     "Cy5_raw",
@@ -442,6 +447,7 @@ colourrange_raw <- c("darkseagreen",
                    "indianred",
                    "grey68")
 
+## TODO find a way to include faceting for LSA and WT samples so the scales are the same
 # function to generate ggplots for each QC variable using the raw data
 QC_bar_chart <- function(df,column,colour) {
   df %>% 
