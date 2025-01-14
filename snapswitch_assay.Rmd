@@ -35,13 +35,13 @@ The script looks for key files in a `parameters` folder. It should contain
 ```{r parameters, message=FALSE}
 #-------- YOUR EXPERIMENT PARAMETERS HERE --------#
 
-datafile <- "Table_Thuy.csv"                   # file name of your MFI table exported from FlowJo
-exp_title <- "Thuy test"        # date and name of the experiment
+datafile <- "240903.csv"                   # file name of your MFI table exported from FlowJo
+exp_title <- "240903 Jurkat"        # date and name of the experiment
 SNAP_batch <- 240527                      # ID of the SNAP-oligo batch that was used
 formulation_order <- c("DMG"
                        )        # order in which formulations will be plotted if grouping is desired
-untreated_ID <- "PBS"                   # untreated sample names for background subtraction
-lipids <- FALSE                            # are you comparing lipids?
+untreated_ID <- "cells"                   # untreated sample names for background subtraction
+lipids <- TRUE                            # are you comparing lipids?
 #-------------------------------------------------#  
 ```
 
@@ -49,8 +49,8 @@ lipids <- FALSE                            # are you comparing lipids?
 # load group and sample key files
 facs_unclean <- read_csv(datafile)
 group_info <- read_csv("parameters/groups.csv")
-sample_info <- read_csv("parameters/samples.csv")
-column_info <- read_csv("parameters/column_info.csv")
+sample_info <- read_csv("parameters/samples_240903.csv")
+column_info <- read_csv("parameters/column_info_HL.csv")
 R_colours <- read_csv("parameters/config/R_colours.csv")
 
 if (lipids == TRUE) {lipid_properties <- read_csv("parameters/config/lipid_properties.csv")}
@@ -64,6 +64,8 @@ conversion_factor <- SNAP_batches$corr_factor[SNAP_batches$batch == SNAP_batch]
 
 # create output directory
 if (!dir.exists("output/")){dir.create("output/")}
+if (!dir.exists(paste0("output/",exp_title))){dir.create(paste0("output/",exp_title))}
+
 ```
 
 ### Analysis
@@ -89,7 +91,7 @@ This code performs data cleaning, subtracts the background MFIs from untreated c
 facs <- facs_unclean %>%
   select(-"...1") %>%
   select(where(function(x) !all(is.na(x)))) %>%
-  filter(!grepl('mystery|Unstained|LNP17', TUBENAME)) %>% # removes "mystery" and Aurora "Unstained" tubes
+  filter(!grepl('mystery|Unstained|LNP20', TUBENAME)) %>% # removes "mystery" and Aurora "Unstained" tubes
   filter(!TUBENAME == "-")                                          # removes mean and SD rows
 
 # rename columns and append "_raw" for fluorescent channels that need calculation
@@ -186,8 +188,18 @@ facs_norm <- facs_norm %>%
   mutate(
     significant_SNAP = ifelse(
       sensor == "SNAP",
-      t.test(adj_Cy5[cells == "WT" & sensor == "SNAP"], 
-             adj_Cy5[cells == "LSA" & sensor == "SNAP"])$p.value < 0.05,
+      {
+        WT_values <- adj_Cy5[cells == "WT" & sensor == "SNAP"]
+        LSA_values <- adj_Cy5[cells == "LSA" & sensor == "SNAP"]
+        
+        # check for NA value, if any are NA or if there are fewer than 3 values, set significant_SNAP to FALSE
+        if (anyNA(WT_values) || anyNA(LSA_values) || 
+            length(WT_values) < 2 || length(LSA_values) < 2) {
+          FALSE
+        } else {
+          t.test(WT_values, LSA_values)$p.value < 0.05
+        }
+      },
       NA
     )
   ) %>%
