@@ -35,24 +35,25 @@ The script looks for key files in a `parameters` folder. It should contain
 ```{r parameters, message=FALSE}
 #-------- YOUR EXPERIMENT PARAMETERS HERE --------#
 
-datafile <- "240903.csv"                   # file name of your MFI table exported from FlowJo
-exp_title <- "240903 Jurkat"        # date and name of the experiment
+datafile <- "20241210_Table.csv"                   # file name of your MFI table exported from FlowJo
+exp_title <- "Thuy_test"        # date and name of the experiment
 SNAP_batch <- 240527                      # ID of the SNAP-oligo batch that was used
 formulation_order <- c("DMG"
                        )        # order in which formulations will be plotted if grouping is desired
-untreated_ID <- "cells"                   # untreated sample names for background subtraction
-lipids <- TRUE                            # are you comparing lipids?
+untreated_ID <- "PBS"                   # untreated sample names for background subtraction
+lipids <- FALSE                            # are you comparing lipids?
+
+# load group and sample key files
+facs_unclean <- read_csv(datafile)
+group_info <- read_csv("parameters/groups.csv")
+sample_info <- read_csv("parameters/samples.csv")
+column_info <- read_csv("parameters/column_info.csv")
 #-------------------------------------------------#  
 ```
 
 ```{r files, echo=FALSE, message=FALSE}
-# load group and sample key files
-facs_unclean <- read_csv(datafile)
-group_info <- read_csv("parameters/groups.csv")
-sample_info <- read_csv("parameters/samples_240903.csv")
-column_info <- read_csv("parameters/column_info_HL.csv")
+# load general configuration files
 R_colours <- read_csv("parameters/config/R_colours.csv")
-
 if (lipids == TRUE) {lipid_properties <- read_csv("parameters/config/lipid_properties.csv")}
 
 # helper vector to order sample_names their sample_ID (eg "LNP1", "LNP2" etc)
@@ -89,9 +90,9 @@ This code performs data cleaning, subtracts the background MFIs from untreated c
 ####--------DATA CLEANING--------####
 # trim data and rename columns
 facs <- facs_unclean %>%
-  select(-"...1") %>%
+  select(-1) %>%
   select(where(function(x) !all(is.na(x)))) %>%
-  filter(!grepl('mystery|Unstained|LNP20', TUBENAME)) %>% # removes "mystery" and Aurora "Unstained" tubes
+  filter(!grepl('mystery|Unstained|LNP10', TUBENAME)) %>% # removes "mystery" and Aurora "Unstained" tubes
   filter(!TUBENAME == "-")                                          # removes mean and SD rows
 
 # rename columns and append "_raw" for fluorescent channels that need calculation
@@ -144,8 +145,13 @@ facs_raw <- facs_significant %>%
   group_by(cells) %>%     # separate calculations for WT or LSA cells
   mutate(
     AF488 = if_else(significant_AF488, AF488_raw - mean(AF488_raw[sample_ID == untreated_ID]), 0),
-    # CHANGE 251007: Cy5 is not reported as pure value and only reported as LSA - WT, therefore subtraction happens afterwards 
-    Cy5 = Cy5_raw,
+    # CHANGE 251007: Cy5 is not reported as pure value, only LSA - WT, therefore subtraction only afterwards 
+    # CHANGE 250321: Added back Cy5 subtraction for the Cy5-LNP ONLY 
+    Cy5 = if_else(
+      sensor == "Cy5",
+      if_else(significant_Cy5, Cy5_raw - mean(Cy5_raw[sample_ID == untreated_ID]), 0),
+      Cy5_raw
+    ),
     mScarlet = if_else(significant_mScarlet, mScarlet_raw - mean(mScarlet_raw[sample_ID == untreated_ID]), 0)
     ) %>%
   ungroup() %>%
@@ -323,7 +329,7 @@ all_plots <- wrap_plots(plot_list, ncol = 2) +
                   theme = theme(plot.title = element_text(size = 10)))
 
 # save and display plots
-ggsave(paste0("output/", exp_title,".png"), plot = all_plots, width = 9, height = 6, units = "in")
+ggsave(paste0("output/", exp_title,"/",exp_title,".png"), plot = all_plots, width = 9, height = 6, units = "in")
 all_plots
 ```
 
@@ -380,7 +386,7 @@ if (lipids == TRUE) {
                     theme = theme(plot.title = element_text(size = 10)))
   
   # save and display plots
-  ggsave(paste0("output/", exp_title,"_pKa.png"), plot = all_plots_pka, width = 10, height = 8, units = "in")
+  ggsave(paste0("output/", exp_title,"/",exp_title,"_pKa.png"), plot = all_plots_pka, width = 10, height = 8, units = "in")
   all_plots_pka
 }
 
@@ -565,11 +571,11 @@ results_list <- lapply(results_list, function(df) {
     left_join(mScarlet_rank, by = "sample_name") %>%
     arrange(rank)  # Sort by rank in ascending order
 })
-write.xlsx(results_list, file = paste0("output/", exp_title,".xlsx"))
+write.xlsx(results_list, file = paste0("output/", exp_title,"/",exp_title,".xlsx"))
 
 # COMBINED ANALYSIS FILE
 # write a csv of the processed data to feed into the SNAPSwitch_combined analysis 
-write.csv(results_SNAP, file = paste0("output/", exp_title,"_SNAP.csv"))
+write.csv(results_SNAP, file = paste0("output/", exp_title, "/", exp_title,"_SNAP.csv"))
 
 # PLOT FILES FOR PKA ETC
 # create table with pKa and other characteristics of each sample vs the means of each variable in datarange
@@ -577,6 +583,6 @@ if (lipids == TRUE) {
   results_SNAP_pka <- results_SNAP %>% 
     group_by(sample_name,pka,tails,unsat) %>% 
     summarise(across(.cols = all_of(datarange), mean))
-  write.csv(results_SNAP_pka, file = paste0("output/", exp_title,"_pKa.csv"))
+  write.csv(results_SNAP_pka, file = paste0("output/", exp_title,"/",exp_title,"_pKa.csv"))
 }
 ```
