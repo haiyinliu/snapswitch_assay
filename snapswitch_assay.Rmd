@@ -43,13 +43,13 @@ Inside the `parameters` folder is a `config` folder for some more information an
 ```{r parameters, message=FALSE}
 #-------- YOUR EXPERIMENT PARAMETERS HERE --------#
 
-datafile <- "20241210_Table.csv"                   # file name of your MFI table exported from FlowJo
-exp_title <- "Thuy_test"        # date and name of the experiment
-SNAP_batch <- 240527                      # ID of the SNAP-oligo batch that was used
+datafile <- "Table.csv"                   # file name of your MFI table exported from FlowJo
+exp_title <- "Test"        # date and name of the experiment
+SNAP_batch <- 241002                      # ID of the SNAP-oligo batch that was used
 formulation_order <- c("DMG"
                        )        # order in which formulations will be plotted if grouping is desired
-untreated_ID <- "PBS"                   # untreated sample names for background subtraction
-lipids <- FALSE                            # are you comparing lipids?
+untreated_ID <- "cells"                   # untreated sample names for background subtraction
+lipids <- TRUE                            # are you comparing lipids?
 
 # load group and sample key files
 facs_unclean <- read_csv(datafile)
@@ -104,7 +104,7 @@ This code performs data cleaning, assigns sample names and cell types, and then 
 facs <- facs_unclean %>%
   select(-1) %>%
   select(where(function(x) !all(is.na(x)))) %>%
-  filter(!grepl('mystery|Unstained|LNP10', TUBENAME)) %>% # removes "mystery" and Aurora "Unstained" tubes
+  filter(!grepl('mystery|Unstained', TUBENAME)) %>% # removes "mystery" and Aurora "Unstained" tubes
   filter(!TUBENAME == "-")                                          # removes mean and SD rows
 
 # rename columns and append "_raw" for fluorescent channels that need calculation
