@@ -22,15 +22,23 @@ Analysis of SNAPSwitchflow cytometry assay performed on the Cytek Aurora, record
 
 #### Data file
 
-`data.csv` was directly exported from Flowjo with these columns: AF488/Cy5/mScarlet gMFI, GROUPNAME (name starts with a number between 1-4, this is the `group_ID`), and TUBENAME (name starts with a `sample_ID` and replicate suffix eg. `LNP1_001`).
+`data.csv` is directly exported from Flowjo with these columns: AF488/Cy5/mScarlet gMFI, GROUPNAME (name starts with a number between 1-4, this is the `group_ID`), and TUBENAME (name is made up of `sample_ID` and replicate suffix `_001`, for example `LNP1_001`).
 
 #### Sample key files
 
 The script looks for key files in a `parameters` folder. It should contain
 
-`groups.csv` links the `group_ID` to information about cells (`WT` or `LSA`), sensor (`SNAP` or `Cy5`).
-`sample_info.csv` links `sample_ID` to the LNP name (e.g. batch, targeting) and formulation.
-`SNAP_batches.csv` links the batch of SNAP oligo used with the experimentally determined correction factor, to account for switch-on efficacy.
+-   `groups.csv` takes the `group_ID` (1 to 4) and assigns the cell type (`WT` or `LSA`), and sensor (`SNAP` or `Cy5`).
+-   `sample_info.csv` links `sample_ID` to the LNP name (e.g. batch, targeting) and formulation.
+-   `SNAP_batches.csv` links the batch of SNAP oligo used with the experimentally determined correction factor, to account for switch-on efficacy.
+-   `column_info.csv` should be updated with the actual column names in your `Table.csv`, and what they correspond to. You can assign them different colours in there too 
+
+#### configuration files
+
+Inside the `parameters` folder is a `config` folder for some more information and customisation.
+
+-   `lipid_properties.csv` contains informations for ionisable lipids (e.g. pKa, lipid family) for lipid comparisons (e.g. 2D plots). *Note: lipid family is not used in calculations yet*
+-   `R_colours.csv` assigns colour to R colour names used in different plot types
 
 ```{r parameters, message=FALSE}
 #-------- YOUR EXPERIMENT PARAMETERS HERE --------#
@@ -71,17 +79,21 @@ if (!dir.exists(paste0("output/",exp_title))){dir.create(paste0("output/",exp_ti
 
 ### Analysis
 
-This code performs data cleaning, subtracts the background MFIs from untreated cells and calculates the endosomal escape values. Following values will be returned:
+This code performs data cleaning, assigns sample names and cell types, and then performs following calculations: 
 
--   raw gMFIs (on LSA cells)
-    -   AF488 gMFI
-    -   SNAP gMFI
-    -   mScarlet gMFI
-    -   Cy5-LNP gMFI
--   adjusted endosomal escape (SNAP signal normalised to AF488 on WT cells for each LNP (formulation + Ab combination) as its own formulation
-    -   absolute (WT bg subtracted)
-    -   relative (additionally divided by AF488 signal)
-    -   % escape (relative to "always on" Cy5-LNP) 
+#### Raw values
+-   LNP association (AF488 gMFI)
+-   Protein expression (mScarlet gMFI)
+-   gMFIs for each sample are compared with the "untreated cells" sample (= background), and if significantly different, background is subtracted. If not significant, `0` is assigned.
+-   Group 2 (SNAP-samples LSA cells) data is reported in the main plots/files, all other values are plotted under QC plots
+
+#### Calculated values
+-   Endosomal escape
+    -   for SNAP samples, SNAP gMFI are normalised to AF488 on WT cells for each LNP (formulation + Ab combination)     -   after normalisation,  each "LSA" sample is compared with the corresponding "WT" sample (= background), and 
+    if significantly different, "WT" is subtracted. If not significant, `0` is assigned. Following values are reported:
+      -   "absolute" escape (`adj_SNAP_abs`, WT subtracted SNAP signal)
+      -   "relative" escape (`adj_SNAP_rel`, SNAP signal divided by AF488 signal)
+      -   % escape efficiency (`SNAP_perc_of_Cy5`, relative SNAP divided by relative Cy5) 
 -   mScarlet expression relative to
     -   LNP association
     -   absolute escape
